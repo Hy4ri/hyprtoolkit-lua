@@ -107,6 +107,11 @@ option(HYPRTOOLKIT_LUA_ENABLE_GUI_TESTS
        "Enable graphical tests that require an active Wayland session" OFF)
 
 if(BUILD_TESTING)
+  add_executable(bindings-test tests/Bindings.cpp)
+  target_link_libraries(bindings-test PRIVATE hyprtoolkit-lua PkgConfig::LIBDRM)
+  target_include_directories(bindings-test PRIVATE src ${LUA_INCLUDE_DIR})
+  add_test(NAME bindings COMMAND bindings-test)
+
   add_test(NAME api-surface
            COMMAND hyprtoolkit-lua-runner
                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/api_surface.lua")

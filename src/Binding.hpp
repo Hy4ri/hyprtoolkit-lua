@@ -32,6 +32,7 @@ extern "C" {
 #include <hyprtoolkit/system/Icons.hpp>
 #include <hyprtoolkit/window/Window.hpp>
 #include <hyprutils/signal/Listener.hpp>
+#include <hyprutils/memory/WeakPtr.hpp>
 
 #include <atomic>
 #include <array>
@@ -53,6 +54,9 @@ namespace Hyprtoolkit::Lua {
     template <typename T>
     using SP = Hyprutils::Memory::CSharedPointer<T>;
 
+    template <typename T>
+    using WP = Hyprutils::Memory::CWeakPointer<T>;
+
     inline constexpr std::string_view MT_COLOR          = "hyprtoolkit.Color";
     inline constexpr std::string_view MT_SIZE           = "hyprtoolkit.DynamicSize";
     inline constexpr std::string_view MT_FONT_SIZE      = "hyprtoolkit.FontSize";
@@ -70,12 +74,20 @@ namespace Hyprtoolkit::Lua {
     inline constexpr std::string_view MT_RADIO_GROUP    = "hyprtoolkit.RadioGroup";
     inline constexpr std::string_view MT_CONNECTION     = "hyprtoolkit.Connection";
 
+    class CLuaCallback;
+    struct SConnection;
+
     struct SLuaContext {
-        lua_State*       state          = nullptr;
-        std::atomic_bool alive          = true;
-        std::thread::id  ownerThread    = std::this_thread::get_id();
-        bool             backendCreated = false;
-        bool             backendActive  = false;
+        lua_State*                               state          = nullptr;
+        std::atomic_bool                         alive          = true;
+        std::thread::id                          ownerThread    = std::this_thread::get_id();
+        bool                                     backendCreated = false;
+        bool                                     backendActive  = false;
+        bool                                     retiring       = false;
+        size_t                                   activeCalls    = 0;
+
+        std::vector<std::weak_ptr<CLuaCallback>> callbacks;
+        std::vector<WP<SConnection>>             connections;
     };
 
     class CLuaCallback {
@@ -126,6 +138,7 @@ namespace Hyprtoolkit::Lua {
     };
 
     std::shared_ptr<SLuaContext>           context(lua_State* state);
+    std::shared_ptr<SLuaContext>           findContext(lua_State* state);
     void                                   closeContext(lua_State* state);
     void                                   requireBackendActive(lua_State* state);
 

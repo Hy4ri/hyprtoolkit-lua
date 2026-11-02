@@ -1,7 +1,10 @@
 #include "Binding.hpp"
 
 #include <hyprtoolkit-lua/LuaBindings.hpp>
+#include <hyprtoolkit-lua/Embedding.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <cmath>
 #include <format>
@@ -17,21 +20,44 @@ struct SContextHolder {
     std::shared_ptr<SLuaContext> context;
 };
 
+static std::expected<void, std::string> retireContext(const std::shared_ptr<SLuaContext>& context) {
+    if (context->ownerThread != std::this_thread::get_id())
+        return std::unexpected("bindings must be retired on their owner thread");
+    if (context->activeCalls != 0)
+        return std::unexpected("bindings cannot be retired from an executing callback");
+    if (!context->alive || context->retiring)
+        return {};
+
+    context->retiring      = true;
+    context->backendActive = false;
+    for (const auto& weak : context->connections) {
+        if (const auto connection = weak.lock())
+            connection->listener.reset();
+    }
+    context->connections.clear();
+    for (const auto& weak : context->callbacks) {
+        if (const auto callback = weak.lock())
+            callback->release();
+    }
+    context->callbacks.clear();
+    context->alive = false;
+    context->state = nullptr;
+    return {};
+}
+
 static int destroyContext(lua_State* state) {
     const auto storage = static_cast<SUserdata<SContextHolder>*>(luaL_testudata(state, 1, CONTEXT_METATABLE.data()));
     if (!storage || !storage->engaged)
         return 0;
-    storage->engaged  = false;
     const auto holder = storage->value();
-    if (!holder)
+    if (!retireContext(holder->context))
         return 0;
-    holder->context->alive = false;
-    holder->context->state = nullptr;
+    storage->engaged = false;
     std::destroy_at(holder);
     return 0;
 }
 
-std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::context(lua_State* state) {
+std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::findContext(lua_State* state) {
     lua_rawgetp(state, LUA_REGISTRYINDEX, &CONTEXT_KEY);
     if (const auto holder = testObject<SContextHolder>(state, -1, CONTEXT_METATABLE); holder) {
         auto result = holder->context;
@@ -39,6 +65,23 @@ std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::context(lua_State* state) {
         return result;
     }
     lua_pop(state, 1);
+    return {};
+}
+
+std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::context(lua_State* state) {
+    if (const auto existing = findContext(state)) {
+        if (!existing->alive || existing->retiring)
+            fail("bindings have been retired");
+        if (existing->ownerThread != std::this_thread::get_id())
+            fail("bindings must be used on their owner thread");
+        return existing;
+    }
+
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &CONTEXT_KEY);
+    const bool finalized = !lua_isnil(state, -1);
+    lua_pop(state, 1);
+    if (finalized)
+        fail("bindings have been retired");
 
     lua_rawgeti(state, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
     auto luaContext   = std::make_shared<SLuaContext>();
@@ -60,12 +103,15 @@ std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::context(lua_State* state) {
 }
 
 void Hyprtoolkit::Lua::closeContext(lua_State* state) {
-    lua_rawgetp(state, LUA_REGISTRYINDEX, &CONTEXT_KEY);
-    if (const auto holder = testObject<SContextHolder>(state, -1, CONTEXT_METATABLE); holder) {
-        holder->context->alive = false;
-        holder->context->state = nullptr;
-    }
-    lua_pop(state, 1);
+    if (!retireState(state))
+        std::terminate();
+}
+
+std::expected<void, std::string> Hyprtoolkit::Lua::retireState(lua_State* state) {
+    if (!state)
+        return std::unexpected("Lua state is null");
+    const auto existing = findContext(state);
+    return existing ? retireContext(existing) : std::expected<void, std::string>{};
 }
 
 void Hyprtoolkit::Lua::requireBackendActive(lua_State* state) {
@@ -100,7 +146,7 @@ lua_State* CLuaCallback::state() const {
 }
 
 bool CLuaCallback::beginCall() const {
-    if (!m_context->alive || !m_context->state || m_reference == LUA_NOREF || m_context->ownerThread != std::this_thread::get_id())
+    if (!m_context->alive || m_context->retiring || !m_context->state || m_reference == LUA_NOREF || m_context->ownerThread != std::this_thread::get_id())
         return false;
     lua_rawgeti(m_context->state, LUA_REGISTRYINDEX, m_reference);
     return true;
@@ -109,6 +155,8 @@ bool CLuaCallback::beginCall() const {
 bool CLuaCallback::finishCall(int argumentCount, int resultCount) const {
     if (!m_context->alive || !m_context->state)
         return false;
+    ++m_context->activeCalls;
+    const Hyprutils::Utils::CScopeGuard finished([this] { --m_context->activeCalls; });
     if (lua_pcall(m_context->state, argumentCount, resultCount, 0) == LUA_OK)
         return true;
 
@@ -184,12 +232,24 @@ bool Hyprtoolkit::Lua::isNoneOrNil(lua_State* state, int index) {
     return lua_isnoneornil(state, index);
 }
 
+template <typename T>
+static void trackReference(std::vector<T>& references, T reference) {
+    if (references.size() == references.capacity()) {
+        std::erase_if(references, [](const auto& weak) { return weak.expired(); });
+        references.reserve(std::max<size_t>(8, references.size() * 2));
+    }
+    references.emplace_back(std::move(reference));
+}
+
 LuaCallback Hyprtoolkit::Lua::callback(lua_State* state, int index, bool optional) {
     if (optional && lua_isnoneornil(state, index))
         return {};
     if (!lua_isfunction(state, index))
         fail("argument " + std::to_string(index) + " must be a function");
-    return std::make_shared<CLuaCallback>(state, index);
+    const auto luaContext = context(state);
+    auto       result     = std::make_shared<CLuaCallback>(state, index);
+    trackReference(luaContext->callbacks, std::weak_ptr<CLuaCallback>{result});
+    return result;
 }
 
 void Hyprtoolkit::Lua::registerMetatable(lua_State* state, std::string_view name, const luaL_Reg* methods, lua_CFunction gc) {
@@ -244,16 +304,19 @@ void Hyprtoolkit::Lua::setClass(lua_State* state, int module, const char* name, 
 }
 
 void Hyprtoolkit::Lua::pushConnection(lua_State* state, Hyprutils::Signal::CHyprSignalListener listener) {
-    pushObject(state, SConnection{.listener = std::move(listener)}, MT_CONNECTION);
+    const auto luaContext = context(state);
+    auto       connection = makeShared<SConnection>(SConnection{.listener = std::move(listener)});
+    trackReference(luaContext->connections, WP<SConnection>{connection});
+    pushObject(state, std::move(connection), MT_CONNECTION);
 }
 
 static int disconnect(lua_State* state) {
-    object<SConnection>(state, 1, MT_CONNECTION).listener.reset();
+    object<SP<SConnection>>(state, 1, MT_CONNECTION)->listener.reset();
     return 0;
 }
 
 static int connected(lua_State* state) {
-    lua_pushboolean(state, !!object<SConnection>(state, 1, MT_CONNECTION).listener);
+    lua_pushboolean(state, !!object<SP<SConnection>>(state, 1, MT_CONNECTION)->listener);
     return 1;
 }
 
@@ -272,7 +335,7 @@ void Hyprtoolkit::Lua::registerAllBindings(lua_State* state) {
 
 int Hyprtoolkit::Lua::createModule(lua_State* state) {
     context(state);
-    registerMetatable(state, MT_CONNECTION, CONNECTION_METHODS, destroyObject<SConnection>);
+    registerMetatable(state, MT_CONNECTION, CONNECTION_METHODS, destroyObject<SP<SConnection>>);
 
     lua_newtable(state);
     const int module = lua_gettop(state);

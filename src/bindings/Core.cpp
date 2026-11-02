@@ -51,6 +51,8 @@ static void trackPending(SBackend& backend, const std::shared_ptr<SPendingCallba
 }
 
 static SBackend& backendHandle(lua_State* state, bool requireActive = true) {
+    if (requireActive)
+        requireBackendActive(state);
     auto& handle = object<SBackend>(state, 1, MT_BACKEND);
     if (requireActive && (!handle.active || !handle.backend))
         fail("backend has been destroyed");
