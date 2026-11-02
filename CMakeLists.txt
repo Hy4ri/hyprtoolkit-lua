@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 4.3)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" VER_RAW)
 string(STRIP "${VER_RAW}" HYPRTOOLKIT_LUA_VERSION)
