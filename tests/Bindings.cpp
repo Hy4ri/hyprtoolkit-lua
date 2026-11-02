@@ -7,6 +7,50 @@
 #include <iostream>
 
 using namespace Hyprtoolkit::Lua;
+using namespace Hyprtoolkit;
+
+class CTestBackend : public IBackend {
+  public:
+    explicit CTestBackend(int& destroyed) : m_destroyed(destroyed) {
+        ;
+    }
+    void destroy() override {
+        ++m_destroyed;
+    }
+    void setLogFn(LogFn&&) override {
+        ;
+    }
+    void addFd(int, std::function<void()>&&) override {
+        ;
+    }
+    void removeFd(int) override {
+        ;
+    }
+    SP<ISystemIconFactory> systemIcons() override {
+        return {};
+    }
+    TimerPointer addTimer(const TimerDuration&, std::function<void(TimerPointer, void*)>, void*, bool) override {
+        return {};
+    }
+    void addIdle(const std::function<void()>&) override {
+        ;
+    }
+    void enterLoop() override {
+        ;
+    }
+    SP<CPalette> getPalette() override {
+        return {};
+    }
+    std::vector<SP<IOutput>> getOutputs() override {
+        return {};
+    }
+    std::expected<SP<ISessionLockState>, eSessionLockError> aquireSessionLock() override {
+        return std::unexpected(LOCK_ERROR_PLATFORM_UNINITIALIZED);
+    }
+
+  private:
+    int& m_destroyed;
+};
 
 static void check(bool condition, std::string_view message) {
     if (!condition)
@@ -282,6 +326,71 @@ static void selfRemovingCallback() {
     check(!current && errors == 1 && lua_gettop(lua.state()) == 0, "error handling survives callback destruction");
 }
 
+static void hostAttachment() {
+    int        destroyed = 0;
+    const auto backend   = makeShared<CTestBackend>(destroyed);
+    {
+        CLuaState first;
+        CLuaState second;
+        first.openLibs();
+        second.openLibs();
+        check(!attachBackend(first.state(), backend), "attachment requires registered bindings");
+        registerAllBindings(first.state());
+        registerAllBindings(second.state());
+        check(!attachBackend(first.state(), {}), "null backend is rejected");
+        check(attachBackend(first.state(), backend).has_value(), "attach host backend");
+        check(attachBackend(second.state(), backend).has_value(), "another state can borrow the backend");
+        check(!attachBackend(first.state(), backend), "duplicate attachment is rejected");
+        check(!attachBackend(first.state(), makeShared<CTestBackend>(destroyed)), "conflicting attachment is rejected");
+        run(first.state(), R"(
+            local backend, err = hyprtoolkit.Backend.create()
+            assert(backend == nil and err:find("owned by the host"))
+            local ok, windowErr = pcall(function() hyprtoolkit.WindowBuilder.begin():commence() end)
+            assert(not ok and windowErr:find("owned by the host"))
+            collectgarbage("collect")
+        )");
+        check(retireState(first.state()).has_value(), "retire one attachment");
+        check(!attachBackend(first.state(), backend), "retired state cannot reattach");
+        requireBackendActive(second.state());
+        check(destroyed == 0, "retiring one state leaves the host backend intact");
+    }
+    check(destroyed == 0, "closing borrower states never destroys the host backend");
+    backend->destroy();
+    check(destroyed == 1, "host remains responsible for backend shutdown");
+}
+
+static void expiredHostBackend() {
+    CLuaState lua;
+    lua.openLibs();
+    registerAllBindings(lua.state());
+    int  destroyed = 0;
+    auto backend   = makeShared<CTestBackend>(destroyed);
+    check(attachBackend(lua.state(), backend).has_value(), "attach temporary backend");
+    const auto cb = readCallback(lua.state(), "return function() end");
+    backend.reset();
+    run(lua.state(), R"(
+        local ok, err = pcall(function() hyprtoolkit.RectangleBuilder.begin():commence() end)
+        assert(not ok and err:find("no longer available"))
+    )");
+    check(!cb->beginCall(), "expired backend suppresses toolkit callbacks");
+}
+
+static void ownedBackendRemainsOwned() {
+    int        destroyed = 0;
+    const auto backend   = makeShared<CTestBackend>(destroyed);
+    {
+        CLuaState lua;
+        registerAllBindings(lua.state());
+        const auto ctx     = context(lua.state());
+        ctx->backendMode   = eBackendMode::OWNED;
+        ctx->backendActive = true;
+        pushObject(lua.state(), SBackend{.backend = backend, .context = ctx}, MT_BACKEND);
+        lua_setglobal(lua.state(), "backend");
+        check(!attachBackend(lua.state(), backend), "host attachment cannot replace an owned backend");
+    }
+    check(destroyed == 1, "standalone backend GC still destroys its backend");
+}
+
 int main() {
     try {
         retirement();
@@ -294,6 +403,9 @@ int main() {
         hostWatchdog();
         hookLifetime();
         selfRemovingCallback();
+        hostAttachment();
+        expiredHostBackend();
+        ownedBackendRemainsOwned();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

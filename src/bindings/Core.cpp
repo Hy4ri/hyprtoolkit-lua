@@ -97,7 +97,12 @@ void Hyprtoolkit::Lua::pushIcon(lua_State* state, SP<ISystemIconDescription> ico
 static int backendCreate(lua_State* state) {
     expectArguments(state, 0, 0);
     const auto luaContext = context(state);
-    if (luaContext->backendCreated) {
+    if (luaContext->backendMode == eBackendMode::HOST) {
+        lua_pushnil(state);
+        lua_pushliteral(state, "backend is owned by the host");
+        return 2;
+    }
+    if (luaContext->backendMode != eBackendMode::NONE) {
         lua_pushnil(state);
         lua_pushliteral(state, "a backend cannot be recreated in the same Lua state");
         return 2;
@@ -109,8 +114,8 @@ static int backendCreate(lua_State* state) {
         return 2;
     }
 
-    luaContext->backendCreated = true;
-    luaContext->backendActive  = true;
+    luaContext->backendMode   = eBackendMode::OWNED;
+    luaContext->backendActive = true;
     pushObject(state, SBackend{.backend = backend, .context = luaContext}, MT_BACKEND);
     return 1;
 }

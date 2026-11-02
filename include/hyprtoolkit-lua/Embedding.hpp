@@ -4,10 +4,20 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <hyprutils/memory/SharedPtr.hpp>
 
 struct lua_State;
 
+namespace Hyprtoolkit {
+    class IBackend;
+}
+
 namespace Hyprtoolkit::Lua {
+    // Attach an existing backend to registered bindings. The host owns all
+    // backend/surface lifecycle and must retire bindings before backend shutdown.
+    // One attachment per Lua state; Lua backend/window creation is disabled.
+    std::expected<void, std::string> attachBackend(lua_State* state, const Hyprutils::Memory::CSharedPointer<IBackend>& backend);
+
     struct SCallbackHooks {
         // Same stack/status contract as lua_pcall(state, arguments, results, 0).
         // Hooks must not yield, close the state, or longjmp across C++ frames.

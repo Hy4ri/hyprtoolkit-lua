@@ -180,6 +180,8 @@ static int setPosition(lua_State* state) {
 static int commenceWindow(lua_State* state) {
     expectArguments(state, 1, 1);
     requireBackendActive(state);
+    if (context(state)->backendMode == eBackendMode::HOST)
+        fail("windows are owned by the host");
     pushWindow(state, windowBuilder(state, 1)->commence());
     return 1;
 }

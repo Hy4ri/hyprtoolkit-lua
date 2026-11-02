@@ -78,14 +78,21 @@ namespace Hyprtoolkit::Lua {
     class CLuaCallback;
     struct SConnection;
 
+    enum class eBackendMode : uint8_t {
+        NONE,
+        OWNED,
+        HOST,
+    };
+
     struct SLuaContext {
-        lua_State*                               state          = nullptr;
-        std::atomic_bool                         alive          = true;
-        std::thread::id                          ownerThread    = std::this_thread::get_id();
-        bool                                     backendCreated = false;
-        bool                                     backendActive  = false;
-        bool                                     retiring       = false;
-        size_t                                   activeCalls    = 0;
+        lua_State*                               state       = nullptr;
+        std::atomic_bool                         alive       = true;
+        std::thread::id                          ownerThread = std::this_thread::get_id();
+        eBackendMode                             backendMode = eBackendMode::NONE;
+        WP<IBackend>                             hostBackend;
+        bool                                     backendActive = false;
+        bool                                     retiring      = false;
+        size_t                                   activeCalls   = 0;
         SCallbackHooks                           hooks;
 
         std::vector<std::weak_ptr<CLuaCallback>> callbacks;

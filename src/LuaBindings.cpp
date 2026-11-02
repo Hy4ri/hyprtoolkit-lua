@@ -41,6 +41,7 @@ static std::expected<void, std::string> retireContext(const std::shared_ptr<SLua
     }
     context->callbacks.clear();
     context->hooks = {};
+    context->hostBackend.reset();
     context->alive = false;
     context->state = nullptr;
     return {};
@@ -61,6 +62,7 @@ static int destroyContext(lua_State* state) {
         holder->context->backendActive = false;
         holder->context->retiring      = true;
         holder->context->hooks         = {};
+        holder->context->hostBackend.reset();
     }
     storage->engaged = false;
     std::destroy_at(holder);
@@ -138,10 +140,30 @@ std::expected<void, std::string> Hyprtoolkit::Lua::setCallbackHooks(lua_State* s
     return {};
 }
 
+std::expected<void, std::string> Hyprtoolkit::Lua::attachBackend(lua_State* state, const SP<IBackend>& backend) {
+    if (!backend)
+        return std::unexpected("host backend is null");
+    const auto existing = findContext(state);
+    if (!existing || !existing->alive || existing->retiring)
+        return std::unexpected("bindings are not active");
+    if (existing->ownerThread != std::this_thread::get_id())
+        return std::unexpected("backend must be attached on the owner thread");
+    if (existing->activeCalls != 0)
+        return std::unexpected("backend cannot be attached from an executing callback");
+    if (existing->backendMode != eBackendMode::NONE)
+        return std::unexpected("a backend has already been bound to this state");
+    existing->hostBackend   = backend;
+    existing->backendMode   = eBackendMode::HOST;
+    existing->backendActive = true;
+    return {};
+}
+
 void Hyprtoolkit::Lua::requireBackendActive(lua_State* state) {
     const auto luaContext = context(state);
     if (!luaContext->backendActive)
-        fail(luaContext->backendCreated ? "backend has been destroyed" : "a backend must be created first");
+        fail(luaContext->backendMode != eBackendMode::NONE ? "backend has been destroyed" : "a backend must be created first");
+    if (luaContext->backendMode == eBackendMode::HOST && luaContext->hostBackend.expired())
+        fail("host backend is no longer available");
 }
 
 CLuaCallback::CLuaCallback(lua_State* state, int index) : m_context(context(state)) {
@@ -171,6 +193,8 @@ lua_State* CLuaCallback::state() const {
 
 bool CLuaCallback::beginCall() const {
     if (!m_context->alive || m_context->retiring || !m_context->state || m_reference == LUA_NOREF || m_context->ownerThread != std::this_thread::get_id())
+        return false;
+    if (m_context->backendMode == eBackendMode::HOST && m_context->hostBackend.expired())
         return false;
     lua_rawgeti(m_context->state, LUA_REGISTRYINDEX, m_reference);
     return true;
