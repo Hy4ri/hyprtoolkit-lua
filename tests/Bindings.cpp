@@ -52,6 +52,16 @@ class CTestBackend : public IBackend {
     int& m_destroyed;
 };
 
+class CTestElement : public IElement {
+  public:
+    void paint() override {
+        ;
+    }
+    Hyprutils::Math::Vector2D size() override {
+        return {4, 4};
+    }
+};
+
 static void check(bool condition, std::string_view message) {
     if (!condition)
         throw std::runtime_error(std::string{message});
@@ -391,6 +401,50 @@ static void ownedBackendRemainsOwned() {
     check(destroyed == 1, "standalone backend GC still destroys its backend");
 }
 
+static void elementExchange() {
+    CLuaState lua;
+    lua.openLibs();
+    check(!getElement(lua.state(), 1), "unregistered state rejects extraction");
+    check(!getElement(nullptr, 1), "null state rejects extraction");
+    registerAllBindings(lua.state());
+    int        destroyed = 0;
+    const auto backend   = makeShared<CTestBackend>(destroyed);
+    check(attachBackend(lua.state(), backend).has_value(), "attach element host");
+    auto               element = makeShared<CTestElement>();
+    const WP<IElement> weak    = element;
+    pushElement(lua.state(), element);
+    lua_pushinteger(lua.state(), 42);
+    const int top = lua_gettop(lua.state());
+    check(getElement(lua.state(), 1).value() == element, "element identity survives exchange");
+    check(getElement(lua.state(), -2).value() == element, "negative stack index works");
+    check(!getElement(lua.state(), -1), "wrong userdata type is rejected");
+    check(!getElement(lua.state(), top + 1), "missing stack slot is rejected");
+    check(lua_gettop(lua.state()) == top, "extraction preserves stack");
+    pushElement(lua.state(), {});
+    check(lua_isnil(lua.state(), -1) && !getElement(lua.state(), -1).value(), "null element roundtrip");
+    element.reset();
+    check(!weak.expired(), "Lua userdata retains the element");
+    lua_settop(lua.state(), 0);
+    lua_gc(lua.state(), LUA_GCCOLLECT, 0);
+    check(weak.expired(), "element is released when Lua userdata is collected");
+
+    element = makeShared<CTestElement>();
+    pushElement(lua.state(), element);
+    lua_pushvalue(lua.state(), -1);
+    lua_setglobal(lua.state(), "element");
+    run(lua.state(), "debug.getmetatable(element).__gc(element)");
+    check(!getElement(lua.state(), -1), "finalized userdata is rejected");
+    lua_pop(lua.state(), 1);
+    pushElement(lua.state(), element);
+    check(retireState(lua.state()).has_value(), "retire element state");
+    check(!getElement(lua.state(), -1), "retired state rejects retained userdata");
+    bool rejected = false;
+    try {
+        pushElement(lua.state(), element);
+    } catch (const std::exception&) { rejected = true; }
+    check(rejected && lua_gettop(lua.state()) == 1, "retired state rejects push without changing stack");
+}
+
 int main() {
     try {
         retirement();
@@ -406,6 +460,7 @@ int main() {
         hostAttachment();
         expiredHostBackend();
         ownedBackendRemainsOwned();
+        elementExchange();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

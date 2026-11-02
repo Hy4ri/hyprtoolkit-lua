@@ -41,11 +41,34 @@ SP<IElement> Hyprtoolkit::Lua::checkElement(lua_State* state, int index) {
 }
 
 void Hyprtoolkit::Lua::pushElement(lua_State* state, SP<IElement> element) {
+    const auto existing = findContext(state);
+    if (!existing || !existing->alive || existing->retiring || existing->ownerThread != std::this_thread::get_id())
+        fail("element bindings are not active on this thread");
+    luaL_getmetatable(state, MT_ELEMENT.data());
+    const bool registered = lua_istable(state, -1);
+    lua_pop(state, 1);
+    if (!registered)
+        fail("element bindings have not been registered");
     if (!element) {
         lua_pushnil(state);
         return;
     }
+    requireBackendActive(state);
     pushObject(state, std::move(element), MT_ELEMENT);
+}
+
+std::expected<SP<IElement>, std::string> Hyprtoolkit::Lua::getElement(lua_State* state, int index) {
+    const auto existing = findContext(state);
+    if (!existing || !existing->alive || existing->retiring || existing->ownerThread != std::this_thread::get_id())
+        return std::unexpected("element bindings are not active on this thread");
+    if (!existing->backendActive || (existing->backendMode == eBackendMode::HOST && existing->hostBackend.expired()))
+        return std::unexpected("backend is not active");
+    if (lua_isnil(state, index))
+        return SP<IElement>{};
+    const auto element = testObject<SP<IElement>>(state, index, MT_ELEMENT);
+    if (!element || !*element)
+        return std::unexpected("expected a live hyprtoolkit element");
+    return *element;
 }
 
 static int elementSize(lua_State* state) {

@@ -247,7 +247,6 @@ namespace Hyprtoolkit::Lua {
     void         setClass(lua_State* state, int module, const char* name, const luaL_Reg* functions);
 
     SP<IElement> checkElement(lua_State* state, int index);
-    void         pushElement(lua_State* state, SP<IElement> element);
     void         pushBuilder(lua_State* state, SBuilderVariant builder);
     void         pushWindow(lua_State* state, SP<IWindow> window);
     void         pushOutput(lua_State* state, SP<IOutput> output);

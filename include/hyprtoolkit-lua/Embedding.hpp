@@ -10,6 +10,7 @@ struct lua_State;
 
 namespace Hyprtoolkit {
     class IBackend;
+    class IElement;
 }
 
 namespace Hyprtoolkit::Lua {
@@ -17,6 +18,15 @@ namespace Hyprtoolkit::Lua {
     // backend/surface lifecycle and must retire bindings before backend shutdown.
     // One attachment per Lua state; Lua backend/window creation is disabled.
     std::expected<void, std::string> attachBackend(lua_State* state, const Hyprutils::Memory::CSharedPointer<IBackend>& backend);
+
+    // Push one element reference (or nil), without transferring backend ownership.
+    // Requires registered, live bindings on the owner thread. Invalid use throws
+    // a C++ exception; Lua allocations require the usual protected Lua boundary.
+    void pushElement(lua_State* state, Hyprutils::Memory::CSharedPointer<IElement> element);
+
+    // Leaves the stack unchanged. Nil is an empty pointer; invalid/finalized
+    // userdata or inactive bindings return an error without raising a Lua error.
+    std::expected<Hyprutils::Memory::CSharedPointer<IElement>, std::string> getElement(lua_State* state, int index);
 
     struct SCallbackHooks {
         // Same stack/status contract as lua_pcall(state, arguments, results, 0).
