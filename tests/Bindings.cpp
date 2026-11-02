@@ -108,12 +108,176 @@ static void rawStateClose() {
     check(!cb->beginCall(), "GC fallback retires externally owned states");
 }
 
+static void callbackHooks() {
+    CLuaState lua;
+    lua.openLibs();
+    registerAllBindings(lua.state());
+    int                      calls = 0;
+    std::vector<std::string> errors;
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .protectedCall =
+                                   [&calls](lua_State* state, int arguments, int results) {
+                                       ++calls;
+                                       return lua_pcall(state, arguments, results, 0);
+                                   },
+                               .reportError =
+                                   [&errors, &lua](std::string_view error) {
+                                       check(!retireState(lua.state()), "retirement from error hooks must be rejected");
+                                       check(!setCallbackHooks(lua.state(), {}), "changing executing hooks must be rejected");
+                                       errors.emplace_back(error);
+                                   },
+                           })
+              .has_value(),
+          "install callback hooks");
+
+    const auto value = readCallback(lua.state(), "return function(n) return n + 1 end");
+    check(value->beginCall(), "begin value callback");
+    lua_pushinteger(lua.state(), 41);
+    check(value->finishCall(1, 1), "host hook preserves callback results");
+    check(lua_tointeger(lua.state(), -1) == 42, "callback result is preserved");
+    lua_pop(lua.state(), 1);
+
+    for (const auto code : {"return function() error('test error') end", "return function() error({}) end"}) {
+        const auto failing = readCallback(lua.state(), code);
+        check(failing->beginCall() && !failing->finishCall(0), "Lua errors are contained");
+        check(lua_gettop(lua.state()) == 0, "error callback restores stack");
+    }
+    check(calls == 3 && errors.size() == 2, "all calls and errors use host hooks");
+    check(errors[0].contains("test error") && errors[1] == "non-string Lua error", "error contents reach reporter");
+
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .protectedCall = [](lua_State*, int, int) -> int { throw std::runtime_error("host failure"); },
+                               .reportError   = [&errors](std::string_view error) { errors.emplace_back(error); },
+                           })
+              .has_value(),
+          "replace quiescent hooks");
+    lua_pushinteger(lua.state(), 99);
+    check(value->beginCall() && !value->finishCall(0), "host exceptions are contained");
+    check(lua_gettop(lua.state()) == 1 && lua_tointeger(lua.state(), -1) == 99, "host failure preserves stack prefix");
+    lua_pop(lua.state(), 1);
+    check(errors.back() == "host failure", "host exception is reported");
+
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .protectedCall = [](lua_State*, int, int) { return LUA_OK; },
+                               .reportError   = [&errors](std::string_view error) { errors.emplace_back(error); },
+                           })
+              .has_value(),
+          "install invalid hook");
+    check(value->beginCall() && !value->finishCall(0), "invalid host stack effects are rejected");
+    check(lua_gettop(lua.state()) == 0 && errors.back().contains("stack contract"), "invalid hook restores the stack");
+
+    check(setCallbackHooks(lua.state(), {}).has_value(), "restore standalone defaults");
+    const auto empty = readCallback(lua.state(), "return function() end");
+    check(empty->beginCall() && empty->finishCall(0), "default callback execution remains available");
+}
+
+static void nestedCallbackHooks() {
+    CLuaState lua;
+    lua.openLibs();
+    registerAllBindings(lua.state());
+    int        calls = 0;
+    const auto inner = readCallback(lua.state(), "return function() end");
+    const auto outer = readCallback(lua.state(), "return function() return 7 end");
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .protectedCall =
+                                   [&calls, inner](lua_State* state, int arguments, int results) {
+                                       if (++calls == 1)
+                                           check(inner->beginCall() && inner->finishCall(0), "nested callback succeeds");
+                                       return lua_pcall(state, arguments, results, 0);
+                                   },
+                           })
+              .has_value(),
+          "install nesting hook");
+    check(outer->beginCall() && outer->finishCall(0, 1), "outer callback succeeds");
+    check(calls == 2 && lua_tointeger(lua.state(), -1) == 7, "nested invocation preserves outer stack");
+    lua_pop(lua.state(), 1);
+}
+
+static void hostWatchdog() {
+    CLuaState lua;
+    lua.openLibs();
+    registerAllBindings(lua.state());
+    std::string error;
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .protectedCall =
+                                   [](lua_State* state, int arguments, int results) {
+                                       lua_sethook(state, [](lua_State* state, lua_Debug*) { luaL_error(state, "host watchdog"); }, LUA_MASKCOUNT, 100);
+                                       const int result = lua_pcall(state, arguments, results, 0);
+                                       lua_sethook(state, nullptr, 0, 0);
+                                       return result;
+                                   },
+                               .reportError = [&error](std::string_view message) { error = message; },
+                           })
+              .has_value(),
+          "install host watchdog");
+    const auto endless = readCallback(lua.state(), "return function() while true do end end");
+    check(endless->beginCall() && !endless->finishCall(0), "host watchdog interrupts Lua");
+    check(error.contains("host watchdog") && lua_gettop(lua.state()) == 0, "watchdog errors are contained");
+}
+
+static void hookLifetime() {
+    CLuaState lua;
+    registerAllBindings(lua.state());
+    auto                     marker = std::make_shared<int>(0);
+    const std::weak_ptr<int> weak   = marker;
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .reportError = [marker](std::string_view) { ++*marker; },
+                           })
+              .has_value(),
+          "install retained host hook");
+    marker.reset();
+    check(!weak.expired(), "context retains host hook");
+    check(retireState(lua.state()).has_value(), "retire host hooks");
+    check(weak.expired(), "retirement releases host captures before lua_close");
+    check(!setCallbackHooks(lua.state(), {}), "retired context rejects new hooks");
+}
+
+static void selfRemovingCallback() {
+    CLuaState lua;
+    lua.openLibs();
+    registerAllBindings(lua.state());
+    LuaCallback current;
+    lua_pushlightuserdata(lua.state(), &current);
+    lua_pushcclosure(
+        lua.state(),
+        [](lua_State* state) {
+            sc<LuaCallback*>(lua_touserdata(state, lua_upvalueindex(1)))->reset();
+            return 0;
+        },
+        1);
+    lua_setglobal(lua.state(), "removeCallback");
+    int errors = 0;
+    check(setCallbackHooks(lua.state(),
+                           {
+                               .reportError = [&errors](std::string_view) { ++errors; },
+                           })
+              .has_value(),
+          "install self-removal reporter");
+    current = readCallback(lua.state(), "return function() removeCallback() end");
+    check(current->beginCall() && current->finishCall(0), "self-removing callback succeeds");
+    check(!current, "callback was destroyed during its own invocation");
+    current = readCallback(lua.state(), "return function() removeCallback(); error('removed') end");
+    check(current->beginCall() && !current->finishCall(0), "self-removing callback errors are contained");
+    check(!current && errors == 1 && lua_gettop(lua.state()) == 0, "error handling survives callback destruction");
+}
+
 int main() {
     try {
         retirement();
         signalRetirement();
         retirementDuringCallback();
         rawStateClose();
+        callbackHooks();
+        nestedCallbackHooks();
+        hostWatchdog();
+        hookLifetime();
+        selfRemovingCallback();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

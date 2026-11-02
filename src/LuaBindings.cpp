@@ -40,6 +40,7 @@ static std::expected<void, std::string> retireContext(const std::shared_ptr<SLua
             callback->release();
     }
     context->callbacks.clear();
+    context->hooks = {};
     context->alive = false;
     context->state = nullptr;
     return {};
@@ -58,6 +59,8 @@ static int destroyContext(lua_State* state) {
 }
 
 std::shared_ptr<SLuaContext> Hyprtoolkit::Lua::findContext(lua_State* state) {
+    if (!state)
+        return {};
     lua_rawgetp(state, LUA_REGISTRYINDEX, &CONTEXT_KEY);
     if (const auto holder = testObject<SContextHolder>(state, -1, CONTEXT_METATABLE); holder) {
         auto result = holder->context;
@@ -114,6 +117,18 @@ std::expected<void, std::string> Hyprtoolkit::Lua::retireState(lua_State* state)
     return existing ? retireContext(existing) : std::expected<void, std::string>{};
 }
 
+std::expected<void, std::string> Hyprtoolkit::Lua::setCallbackHooks(lua_State* state, SCallbackHooks hooks) {
+    const auto existing = findContext(state);
+    if (!existing || !existing->alive || existing->retiring)
+        return std::unexpected("bindings are not active");
+    if (existing->ownerThread != std::this_thread::get_id())
+        return std::unexpected("callback hooks must be set on the owner thread");
+    if (existing->activeCalls != 0)
+        return std::unexpected("callback hooks cannot be changed from an executing callback");
+    existing->hooks = std::move(hooks);
+    return {};
+}
+
 void Hyprtoolkit::Lua::requireBackendActive(lua_State* state) {
     const auto luaContext = context(state);
     if (!luaContext->backendActive)
@@ -152,22 +167,64 @@ bool CLuaCallback::beginCall() const {
     return true;
 }
 
+static void reportCallbackError(std::shared_ptr<SLuaContext> context, std::string_view message) {
+    if (!context->alive || context->retiring || context->ownerThread != std::this_thread::get_id())
+        return;
+    ++context->activeCalls;
+    const int                           top = lua_gettop(context->state);
+    const Hyprutils::Utils::CScopeGuard finished([context, top] {
+        lua_settop(context->state, top);
+        --context->activeCalls;
+    });
+    if (context->hooks.reportError) {
+        try {
+            context->hooks.reportError(message);
+            return;
+        } catch (...) { /* Fall back to stderr if the host reporter fails. */
+        }
+    }
+    std::fprintf(stderr, "hyprtoolkit-lua callback error: %.*s\n", static_cast<int>(message.size()), message.data());
+}
+
 bool CLuaCallback::finishCall(int argumentCount, int resultCount) const {
-    if (!m_context->alive || !m_context->state)
+    // Lua may remove the callback which owns this object during the call.
+    const auto context = m_context;
+    if (!context->alive || !context->state)
         return false;
-    ++m_context->activeCalls;
-    const Hyprutils::Utils::CScopeGuard finished([this] { --m_context->activeCalls; });
-    if (lua_pcall(m_context->state, argumentCount, resultCount, 0) == LUA_OK)
+    ++context->activeCalls;
+    const Hyprutils::Utils::CScopeGuard finished([context] { --context->activeCalls; });
+    const int                           base   = lua_gettop(context->state) - argumentCount - 1;
+    int                                 status = LUA_ERRRUN;
+    try {
+        status = context->hooks.protectedCall ? context->hooks.protectedCall(context->state, argumentCount, resultCount) : lua_pcall(context->state, argumentCount, resultCount, 0);
+    } catch (const std::exception& error) {
+        lua_settop(context->state, base);
+        reportCallbackError(context, error.what());
+        return false;
+    } catch (...) {
+        lua_settop(context->state, base);
+        reportCallbackError(context, "unknown host callback exception");
+        return false;
+    }
+
+    if (lua_gettop(context->state) != base + (status == LUA_OK ? resultCount : 1)) {
+        lua_settop(context->state, base);
+        reportCallbackError(context, "protected-call hook violated the Lua stack contract");
+        return false;
+    }
+    if (status == LUA_OK)
         return true;
 
-    size_t      length = 0;
-    const char* error  = lua_tolstring(m_context->state, -1, &length);
-    if (error)
-        std::fprintf(stderr, "hyprtoolkit-lua callback error: %.*s\n", static_cast<int>(length), error);
-    else
-        std::fprintf(stderr, "hyprtoolkit-lua callback error: unknown error\n");
-    lua_pop(m_context->state, 1);
+    size_t            length  = 0;
+    const char*       error   = lua_tolstring(context->state, -1, &length);
+    const std::string message = error ? std::string{error, length} : "non-string Lua error";
+    lua_settop(context->state, base);
+    reportCallbackError(context, message);
     return false;
+}
+
+void CLuaCallback::reportError(std::string_view message) const {
+    reportCallbackError(m_context, message);
 }
 
 [[noreturn]] void Hyprtoolkit::Lua::fail(std::string message) {

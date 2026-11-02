@@ -111,6 +111,7 @@ if(BUILD_TESTING)
   target_link_libraries(bindings-test PRIVATE hyprtoolkit-lua PkgConfig::LIBDRM)
   target_include_directories(bindings-test PRIVATE src ${LUA_INCLUDE_DIR})
   add_test(NAME bindings COMMAND bindings-test)
+  set_tests_properties(bindings PROPERTIES TIMEOUT 10)
 
   add_test(NAME api-surface
            COMMAND hyprtoolkit-lua-runner

@@ -33,6 +33,7 @@ extern "C" {
 #include <hyprtoolkit/window/Window.hpp>
 #include <hyprutils/signal/Listener.hpp>
 #include <hyprutils/memory/WeakPtr.hpp>
+#include <hyprtoolkit-lua/Embedding.hpp>
 
 #include <atomic>
 #include <array>
@@ -85,6 +86,7 @@ namespace Hyprtoolkit::Lua {
         bool                                     backendActive  = false;
         bool                                     retiring       = false;
         size_t                                   activeCalls    = 0;
+        SCallbackHooks                           hooks;
 
         std::vector<std::weak_ptr<CLuaCallback>> callbacks;
         std::vector<WP<SConnection>>             connections;
@@ -100,6 +102,7 @@ namespace Hyprtoolkit::Lua {
 
         bool          beginCall() const;
         bool          finishCall(int argumentCount, int resultCount = 0) const;
+        void          reportError(std::string_view message) const;
         void          release();
         lua_State*    state() const;
 

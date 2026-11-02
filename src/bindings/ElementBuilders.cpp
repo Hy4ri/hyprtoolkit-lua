@@ -1,6 +1,6 @@
 #include "../Binding.hpp"
 
-#include <cstdio>
+#include <format>
 
 using namespace Hyprtoolkit;
 using namespace Hyprtoolkit::Lua;
@@ -84,7 +84,8 @@ static colorFn colorFunction(lua_State* state, int index) {
     }
 
     const auto luaCallback = callback(state, index);
-    return [luaCallback] {
+    return [source = luaCallback] {
+        const auto luaCallback = source;
         if (!luaCallback->beginCall())
             return CHyprColor{};
         auto*     state = luaCallback->state();
@@ -98,7 +99,7 @@ static colorFn colorFunction(lua_State* state, int index) {
             return result;
         } catch (const std::exception& error) {
             lua_settop(state, top);
-            std::fprintf(stderr, "hyprtoolkit-lua color callback error: %s\n", error.what());
+            luaCallback->reportError(std::format("color callback: {}", error.what()));
             return CHyprColor{};
         }
     };
@@ -111,7 +112,8 @@ static gradientFn gradientFunction(lua_State* state, int index) {
     }
 
     const auto luaCallback = callback(state, index);
-    return [luaCallback] {
+    return [source = luaCallback] {
+        const auto luaCallback = source;
         if (!luaCallback->beginCall())
             return CGradientValueData{CHyprColor{}};
         auto*     state = luaCallback->state();
@@ -125,7 +127,7 @@ static gradientFn gradientFunction(lua_State* state, int index) {
             return result;
         } catch (const std::exception& error) {
             lua_settop(state, top);
-            std::fprintf(stderr, "hyprtoolkit-lua gradient callback error: %s\n", error.what());
+            luaCallback->reportError(std::format("gradient callback: {}", error.what()));
             return CGradientValueData{CHyprColor{}};
         }
     };
