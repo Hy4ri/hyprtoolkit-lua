@@ -6,7 +6,7 @@ string(STRIP "${VER_RAW}" HYPRTOOLKIT_LUA_VERSION)
 project(
   hyprtoolkit-lua
   VERSION ${HYPRTOOLKIT_LUA_VERSION}
-  DESCRIPTION "Lua 5.4 bindings for Hyprtoolkit"
+  DESCRIPTION "Lua 5.5 bindings for Hyprtoolkit"
   LANGUAGES CXX)
 
 include(CTest)
@@ -24,7 +24,7 @@ if(HYPRTOOLKIT_PREFIX)
 endif()
 
 find_package(PkgConfig REQUIRED)
-find_package(Lua 5.4 EXACT REQUIRED)
+find_package(Lua 5.5 EXACT REQUIRED)
 pkg_check_modules(HYPRTOOLKIT REQUIRED IMPORTED_TARGET hyprtoolkit)
 pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 
@@ -71,7 +71,7 @@ add_executable(hyprtoolkit-lua-runner runner/main.cpp)
 target_link_libraries(hyprtoolkit-lua-runner PRIVATE hyprtoolkit-lua)
 set_target_properties(hyprtoolkit-lua-runner PROPERTIES OUTPUT_NAME hyprtoolkit-lua)
 
-set(HYPRTOOLKIT_LUA_INSTALL_CMOD_DIR "${CMAKE_INSTALL_LIBDIR}/lua/5.4" CACHE PATH
+set(HYPRTOOLKIT_LUA_INSTALL_CMOD_DIR "${CMAKE_INSTALL_LIBDIR}/lua/5.5" CACHE PATH
     "Installation directory for the Lua C module")
 if(IS_ABSOLUTE "${HYPRTOOLKIT_LUA_INSTALL_CMOD_DIR}")
   set(HYPRTOOLKIT_LUA_INSTALL_CMOD_FULL_DIR
@@ -111,9 +111,16 @@ if(BUILD_TESTING)
            COMMAND hyprtoolkit-lua-runner
                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/api_surface.lua")
 
-  find_program(LUA_EXECUTABLE NAMES lua5.4 lua54 lua)
+  find_program(LUA_EXECUTABLE NAMES lua5.5 lua55 lua)
   if(NOT LUA_EXECUTABLE)
-    message(FATAL_ERROR "A Lua 5.4 interpreter is required for module tests")
+    message(FATAL_ERROR "A Lua 5.5 interpreter is required for module tests")
+  endif()
+  execute_process(
+    COMMAND "${LUA_EXECUTABLE}" -e "assert(_VERSION == 'Lua 5.5')"
+    RESULT_VARIABLE LUA_INTERPRETER_STATUS
+    ERROR_VARIABLE LUA_INTERPRETER_ERROR)
+  if(NOT LUA_INTERPRETER_STATUS STREQUAL "0")
+    message(FATAL_ERROR "Module tests require Lua 5.5: ${LUA_INTERPRETER_ERROR}")
   endif()
 
   add_test(NAME module-loading

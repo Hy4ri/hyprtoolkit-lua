@@ -1,6 +1,6 @@
 # hyprtoolkit-lua
 
-Lua 5.4 bindings for [Hyprtoolkit](https://github.com/hyprwm/hyprtoolkit). The
+Lua 5.5 bindings for [Hyprtoolkit](https://github.com/hyprwm/hyprtoolkit). The
 bindings use the Lua C API directly and can be used either as a native Lua
 module or through the included script runner.
 
@@ -12,7 +12,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Hyprtoolkit 0.5.4, Lua 5.4, libdrm, CMake, and pkg-config are required. The
+Hyprtoolkit 0.5.4, Lua 5.5, libdrm, CMake, and pkg-config are required. The
 Hyprtoolkit fixes through `9b4e630` are currently required.
 
 The build produces:
@@ -21,7 +21,7 @@ The build produces:
 - `hyprtoolkit.so`: the module loaded by `require("hyprtoolkit")`;
 - `hyprtoolkit-lua`: a script runner which preloads the module globally.
 
-The module is installed to `${CMAKE_INSTALL_LIBDIR}/lua/5.4`. A Nix package and
+The module is installed to `${CMAKE_INSTALL_LIBDIR}/lua/5.5`. A Nix package and
 development shell are also available from the flake.
 
 ## Example

@@ -4,8 +4,8 @@ libdir=@CMAKE_INSTALL_FULL_LIBDIR@
 
 Name: hyprtoolkit-lua
 URL: https://github.com/hyprwm/hyprtoolkit-lua
-Description: Lua 5.4 bindings for Hyprtoolkit
+Description: Lua 5.5 bindings for Hyprtoolkit
 Version: @HYPRTOOLKIT_LUA_VERSION@
-Requires: hyprtoolkit, lua5.4
+Requires: hyprtoolkit, lua5.5
 Cflags: -I${includedir}
 Libs: -L${libdir} -lhyprtoolkit-lua

@@ -5,7 +5,7 @@
   pkg-config,
   hyprtoolkit,
   libdrm,
-  lua5_4,
+  lua5_5,
   version ? "git",
   doCheck ? false,
 }:
@@ -31,12 +31,12 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     cmake
     pkg-config
-    lua5_4
+    lua5_5
   ];
 
   propagatedBuildInputs = [
     hyprtoolkit
-    lua5_4
+    lua5_5
   ];
 
   buildInputs = hyprtoolkit.buildInputs ++ [ libdrm ];
@@ -47,7 +47,7 @@ stdenv.mkDerivation {
 
   meta = {
     homepage = "https://github.com/hyprwm/hyprtoolkit-lua";
-    description = "Lua 5.4 bindings for Hyprtoolkit";
+    description = "Lua 5.5 bindings for Hyprtoolkit";
     license = lib.licenses.bsd3;
     platforms = lib.platforms.linux;
   };
