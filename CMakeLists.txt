@@ -105,6 +105,8 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/hyprtoolkit-lua.pc"
 
 option(HYPRTOOLKIT_LUA_ENABLE_GUI_TESTS
        "Enable graphical tests that require an active Wayland session" OFF)
+option(HYPRTOOLKIT_LUA_ENABLE_EMBEDDED_TESTS
+       "Enable headless EGL embedding tests" OFF)
 
 if(BUILD_TESTING)
   add_executable(bindings-test tests/Bindings.cpp)
@@ -135,7 +137,19 @@ if(BUILD_TESTING)
   set_tests_properties(
     module-loading
     PROPERTIES ENVIRONMENT
-               "LUA_CPATH=$<TARGET_FILE_DIR:hyprtoolkit-lua-module>/?.so;;")
+                "LUA_CPATH=$<TARGET_FILE_DIR:hyprtoolkit-lua-module>/?.so;;")
+
+  if(HYPRTOOLKIT_LUA_ENABLE_EMBEDDED_TESTS)
+    pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
+    pkg_check_modules(GLES REQUIRED IMPORTED_TARGET glesv2)
+    add_executable(embedded-test tests/Embedded.cpp)
+    target_include_directories(embedded-test PRIVATE ${LUA_INCLUDE_DIR})
+    target_link_libraries(embedded-test PRIVATE hyprtoolkit-lua
+                          PkgConfig::LIBDRM PkgConfig::EGL PkgConfig::GLES)
+    add_test(NAME embedded COMMAND embedded-test)
+    set_tests_properties(embedded PROPERTIES LABELS headless
+                         SKIP_RETURN_CODE 77 TIMEOUT 30)
+  endif()
 
   if(HYPRTOOLKIT_LUA_ENABLE_GUI_TESTS)
     add_test(NAME gui-smoke
