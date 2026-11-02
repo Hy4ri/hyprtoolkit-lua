@@ -108,6 +108,21 @@ static void rawStateClose() {
     check(!cb->beginCall(), "GC fallback retires externally owned states");
 }
 
+static void rawStateCloseOnAnotherThread() {
+    auto* state = luaL_newstate();
+    check(state != nullptr, "create external Lua state");
+    registerAllBindings(state);
+    const auto  cb                 = readCallback(state, "return function() end");
+    bool        retirementRejected = false;
+    std::thread closer([state, &retirementRejected] {
+        retirementRejected = !retireState(state).has_value();
+        lua_close(state);
+    });
+    closer.join();
+    check(retirementRejected, "explicit retirement must use the owner thread");
+    check(!cb->beginCall() && cb->state() == nullptr, "raw close invalidates retained callbacks even off-thread");
+}
+
 static void callbackHooks() {
     CLuaState lua;
     lua.openLibs();
@@ -273,6 +288,7 @@ int main() {
         signalRetirement();
         retirementDuringCallback();
         rawStateClose();
+        rawStateCloseOnAnotherThread();
         callbackHooks();
         nestedCallbackHooks();
         hostWatchdog();

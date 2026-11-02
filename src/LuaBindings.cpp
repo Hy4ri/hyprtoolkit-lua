@@ -51,8 +51,17 @@ static int destroyContext(lua_State* state) {
     if (!storage || !storage->engaged)
         return 0;
     const auto holder = storage->value();
-    if (!retireContext(holder->context))
+    if (holder->context->activeCalls != 0)
         return 0;
+    if (!retireContext(holder->context)) {
+        // A quiescent raw lua_close() may run off the owner thread. Registry
+        // cleanup belongs to Lua here, but retained callbacks must be inert.
+        holder->context->alive         = false;
+        holder->context->state         = nullptr;
+        holder->context->backendActive = false;
+        holder->context->retiring      = true;
+        holder->context->hooks         = {};
+    }
     storage->engaged = false;
     std::destroy_at(holder);
     return 0;
