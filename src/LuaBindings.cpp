@@ -140,26 +140,46 @@ std::expected<void, std::string> Hyprtoolkit::Lua::setCallbackHooks(lua_State* s
     return {};
 }
 
-std::expected<void, std::string> Hyprtoolkit::Lua::attachBackend(lua_State* state, const SP<IBackend>& backend) {
-    if (!backend)
-        return std::unexpected("host backend is null");
+static std::expected<std::shared_ptr<SLuaContext>, std::string> hostContext(lua_State* state, std::string_view action) {
     const auto existing = findContext(state);
     if (!existing || !existing->alive || existing->retiring)
         return std::unexpected("bindings are not active");
     if (existing->ownerThread != std::this_thread::get_id())
-        return std::unexpected("backend must be attached on the owner thread");
+        return std::unexpected(std::format("backend must be {} on the owner thread", action));
     if (existing->activeCalls != 0)
-        return std::unexpected("backend cannot be attached from an executing callback");
-    if (existing->backendMode != eBackendMode::NONE)
+        return std::unexpected(std::format("backend cannot be {} from an executing callback", action));
+    return existing;
+}
+
+std::expected<void, std::string> Hyprtoolkit::Lua::attachBackend(lua_State* state, const SP<IBackend>& backend) {
+    if (!backend)
+        return std::unexpected("host backend is null");
+    const auto existing = hostContext(state, "attached");
+    if (!existing)
+        return std::unexpected(existing.error());
+    // a reserved state is in host mode without an active backend
+    if ((*existing)->backendMode == eBackendMode::OWNED || (*existing)->backendActive)
         return std::unexpected("a backend has already been bound to this state");
-    existing->hostBackend   = backend;
-    existing->backendMode   = eBackendMode::HOST;
-    existing->backendActive = true;
+    (*existing)->hostBackend   = backend;
+    (*existing)->backendMode   = eBackendMode::HOST;
+    (*existing)->backendActive = true;
+    return {};
+}
+
+std::expected<void, std::string> Hyprtoolkit::Lua::reserveBackend(lua_State* state) {
+    const auto existing = hostContext(state, "reserved");
+    if (!existing)
+        return std::unexpected(existing.error());
+    if ((*existing)->backendMode == eBackendMode::OWNED)
+        return std::unexpected("a backend has already been bound to this state");
+    (*existing)->backendMode = eBackendMode::HOST;
     return {};
 }
 
 void Hyprtoolkit::Lua::requireBackendActive(lua_State* state) {
     const auto luaContext = context(state);
+    if (!luaContext->backendActive && luaContext->backendMode == eBackendMode::HOST)
+        fail("host backend is not available yet");
     if (!luaContext->backendActive)
         fail(luaContext->backendMode != eBackendMode::NONE ? "backend has been destroyed" : "a backend must be created first");
     if (luaContext->backendMode == eBackendMode::HOST && luaContext->hostBackend.expired())

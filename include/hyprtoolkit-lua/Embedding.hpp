@@ -19,6 +19,11 @@ namespace Hyprtoolkit::Lua {
     // One attachment per Lua state; Lua backend/window creation is disabled.
     std::expected<void, std::string> attachBackend(lua_State* state, const Hyprutils::Memory::CSharedPointer<IBackend>& backend);
 
+    // Reserve registered bindings for a host backend which does not exist yet.
+    // Lua backend/window creation is disabled immediately, backend-dependent
+    // calls fail until attachBackend() is called. Idempotent.
+    std::expected<void, std::string> reserveBackend(lua_State* state);
+
     // Push one element reference (or nil), without transferring backend ownership.
     // Requires registered, live bindings on the owner thread. Invalid use throws
     // a C++ exception; Lua allocations require the usual protected Lua boundary.

@@ -369,6 +369,26 @@ static void hostAttachment() {
     check(destroyed == 1, "host remains responsible for backend shutdown");
 }
 
+static void reservedHostBackend() {
+    int        destroyed = 0;
+    const auto backend   = makeShared<CTestBackend>(destroyed);
+    CLuaState  lua;
+    lua.openLibs();
+    check(!reserveBackend(lua.state()), "reservation requires registered bindings");
+    registerAllBindings(lua.state());
+    check(reserveBackend(lua.state()).has_value(), "reserve host backend");
+    check(reserveBackend(lua.state()).has_value(), "reservation is idempotent");
+    run(lua.state(), R"(
+        local backend, err = hyprtoolkit.Backend.create()
+        assert(backend == nil and err:find("owned by the host"))
+        local ok, elementErr = pcall(function() hyprtoolkit.RectangleBuilder.begin():commence() end)
+        assert(not ok and elementErr:find("not available yet"))
+    )");
+    check(attachBackend(lua.state(), backend).has_value(), "attach reserved backend");
+    check(!attachBackend(lua.state(), backend), "reserved state attaches only once");
+    requireBackendActive(lua.state());
+}
+
 static void expiredHostBackend() {
     CLuaState lua;
     lua.openLibs();
@@ -397,6 +417,7 @@ static void ownedBackendRemainsOwned() {
         pushObject(lua.state(), SBackend{.backend = backend, .context = ctx}, MT_BACKEND);
         lua_setglobal(lua.state(), "backend");
         check(!attachBackend(lua.state(), backend), "host attachment cannot replace an owned backend");
+        check(!reserveBackend(lua.state()), "host reservation cannot replace an owned backend");
     }
     check(destroyed == 1, "standalone backend GC still destroys its backend");
 }
@@ -458,6 +479,7 @@ int main() {
         hookLifetime();
         selfRemovingCallback();
         hostAttachment();
+        reservedHostBackend();
         expiredHostBackend();
         ownedBackendRemainsOwned();
         elementExchange();
